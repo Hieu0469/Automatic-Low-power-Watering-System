@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <Preferences.h>
 
 /*
@@ -30,10 +31,74 @@ struct FuzzyParams {
     int rules[3][3][3];
 };
 
-/** @brief Cấu hình luật mờ có thể cập nhật từ BLE và lưu trong NVS. */
+/** @brief Cấu hình luật mờ có thể cập nhật từ BLE/MQTT và lưu trong NVS. */
 class FuzzyConfig {
   public:
     FuzzyParams params;
+
+    /**
+     * @brief Áp dụng toàn bộ 9 hàm membership và 27 luật từ JSON MQTT.
+     * @param config Object có cùng cấu trúc với toJSON().
+     * @return true khi toàn bộ dữ liệu hợp lệ và đã lưu NVS; false nếu không.
+     *
+     * Dùng bản sao để một payload lỗi không sửa dở cấu hình đang chạy.
+     */
+    bool applyJson(JsonVariantConst config) {
+        FuzzyParams candidate = params;
+        JsonObjectConst mf = config["mf"].as<JsonObjectConst>();
+        if (mf.isNull())
+            return false;
+
+        struct MembershipField {
+            const char *key;
+            MFParams *target;
+        };
+        MembershipField fields[] = {
+            {"sl", &candidate.soil_low}, {"sm", &candidate.soil_med}, {"sh", &candidate.soil_hi},
+            {"hl", &candidate.hum_low},  {"hm", &candidate.hum_med},  {"hh", &candidate.hum_hi},
+            {"th", &candidate.temp_hot}, {"tm", &candidate.temp_med}, {"tc", &candidate.temp_cold}};
+
+        for (const auto &field : fields) {
+            JsonArrayConst triple = mf[field.key].as<JsonArrayConst>();
+            if (triple.size() != 3)
+                return false;
+            for (JsonVariantConst value : triple) {
+                if ((!value.is<float>() && !value.is<int>()) || !isfinite(value.as<float>()))
+                    return false;
+            }
+            const float a = triple[0].as<float>();
+            const float b = triple[1].as<float>();
+            const float c = triple[2].as<float>();
+            if (a > b || b > c || a < -50.0f || c > 150.0f)
+                return false;
+            *field.target = {a, b, c};
+        }
+
+        const char *ruleKeys[3] = {"rl", "rm", "rh"};
+        for (int s = 0; s < 3; ++s) {
+            JsonArrayConst rows = config[ruleKeys[s]].as<JsonArrayConst>();
+            if (rows.size() != 3)
+                return false;
+            for (int h = 0; h < 3; ++h) {
+                JsonArrayConst values = rows[h].as<JsonArrayConst>();
+                if (values.size() != 3)
+                    return false;
+                for (int t = 0; t < 3; ++t) {
+                    JsonVariantConst value = values[t];
+                    if (!value.is<int>())
+                        return false;
+                    const int rule = value.as<int>();
+                    if (rule < 0 || rule > 2)
+                        return false;
+                    candidate.rules[s][h][t] = rule;
+                }
+            }
+        }
+
+        params = candidate;
+        saveToNVS();
+        return true;
+    }
 
     /** @brief Nạp mặc định, sau đó đọc cấu hình đã lưu từ NVS nếu có. */
     void begin() {
@@ -95,7 +160,7 @@ class FuzzyConfig {
     }
 
     // Sinh chuỗi JSON đầy đủ để gửi lại web khi kết nối (đọc config hiện tại)
-    /** @return JSON cấu hình gửi tới dashboard qua BLE. */
+    /** @return JSON cấu hình gửi tới dashboard qua BLE hoặc MQTT. */
     String toJSON() {
         char buf[768];
         snprintf(buf, sizeof(buf),

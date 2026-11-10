@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 
-/** @file Telemetry.h @brief Các bản tin nội bộ chuyển từ task sang vòng lặp ứng dụng. */
+/** @file Telemetry.h @brief Các bản tin nội bộ chuyển từ task sang MQTT loop. */
 
 /** @brief Kết quả một chu kỳ đo, dùng để phát JSON telemetry. */
 struct TelemetrySnapshot {
