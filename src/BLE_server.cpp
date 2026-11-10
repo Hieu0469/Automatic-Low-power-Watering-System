@@ -22,6 +22,7 @@ static BLECharacteristic *pSensorChar = nullptr;
 static BLECharacteristic *pConfigChar = nullptr;
 static bool deviceConnected = false;
 static bool configRequested = false; // gửi config sau khi connect
+static volatile bool configChanged = false;
 static ConfigService *configService = nullptr;
 
 // ─── Callback nhận lệnh từ Web ───────────────────────────────────────────────
@@ -38,6 +39,7 @@ class ConfigCallbacks : public BLECharacteristicCallbacks {
         const ConfigUpdateResult result =
             configService ? configService->applyCommand(cmd) : ConfigUpdateResult::Busy;
         if (result == ConfigUpdateResult::Applied) {
+            configChanged = true;
             // Phản hồi ACK về web
             String ack = "ACK:" + cmd.substring(0, 20);
             pChar->setValue(ack.c_str());
@@ -145,6 +147,13 @@ bool ble_config_requested() {
 void ble_clear_config_request() {
     configRequested = false;
 }
+bool ble_config_changed() {
+    return configChanged;
+}
+void ble_clear_config_changed() {
+    configChanged = false;
+}
+
 // ─── Gửi alert về web ────────────────────────────────────────────────────────
 // msg: "ALERT:NO_WATER" hoặc "ALERT:CLEAR"
 void ble_send_alert_msg(const String &msg) {

@@ -2,7 +2,7 @@
 #include <Arduino.h>
 class ConfigService;
 
-/** @file BLE_server.h @brief Giao diện BLE cho dashboard. */
+/** @file BLE_server.h @brief Giao diện BLE cũ, chạy song song với MQTT. */
 
 /** @brief Khởi tạo BLE service và advertising. */
 void ble_server_init(ConfigService &config);
@@ -18,3 +18,7 @@ bool ble_is_connected();
 bool ble_config_requested();
 /** @brief Xóa cờ yêu cầu cấu hình. */
 void ble_clear_config_request();
+/** @brief true nếu BLE vừa thay đổi luật mờ và MQTT cần phát lại config. */
+bool ble_config_changed();
+/** @brief Xóa cờ thay đổi sau khi MQTT đã phát cấu hình. */
+void ble_clear_config_changed();
