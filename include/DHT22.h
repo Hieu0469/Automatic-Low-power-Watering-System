@@ -11,33 +11,45 @@
 #include <Arduino.h>
 #include <DHT.h>
 
+/** @brief Driver DHT22 với kiểm tra miền giá trị hợp lệ. */
 class DHT22Driver {
-public:
+  public:
+    /** @param pin GPIO data của DHT22. */
     DHT22Driver(uint8_t pin) : _dht(pin, DHT22) {}
 
+    /** @brief Khởi động thư viện Adafruit DHT. */
     void begin() {
         _dht.begin();
         Serial.println("[DHT22] Khoi tao xong.");
     }
 
-    // Đọc cảm biến — trả về true nếu thành công
-    // Adafruit DHT tự cache kết quả 2 giây
+    /**
+     * @brief Đọc nhiệt độ và độ ẩm; thư viện cache kết quả trong 2 giây.
+     * @return false nếu NaN, vô cực hoặc ngoài dải DHT22.
+     */
     bool read() {
         _temp = _dht.readTemperature();
-        _hum  = _dht.readHumidity();
+        _hum = _dht.readHumidity();
 
-        if (isnan(_temp) || isnan(_hum)) {
-            Serial.println("[DHT22] Doc loi — kiem tra day noi GPIO15");
+        if (!isfinite(_temp) || !isfinite(_hum) || _temp < -40.0f || _temp > 80.0f || _hum < 0.0f ||
+            _hum > 100.0f) {
+            Serial.println("[DHT22] Du lieu khong hop le — kiem tra day noi GPIO15");
             return false;
         }
         return true;
     }
 
-    float temperature() { return _temp; }
-    float humidity()    { return _hum;  }
+    /** @return Nhiệt độ °C của lần đọc gần nhất; chỉ dùng sau khi read() thành công. */
+    float temperature() {
+        return _temp;
+    }
+    /** @return Độ ẩm không khí % của lần đọc gần nhất; chỉ dùng sau khi read() thành công. */
+    float humidity() {
+        return _hum;
+    }
 
-private:
-    DHT   _dht;
+  private:
+    DHT _dht;
     float _temp = NAN;
-    float _hum  = NAN;
+    float _hum = NAN;
 };
