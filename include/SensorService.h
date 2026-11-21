@@ -21,7 +21,7 @@ class SensorService {
     /** @brief Khởi tạo cảm biến, queue và task đo mỗi 10 giây. */
     bool begin();
 
-    /** @brief Lấy snapshot mới nhất để vòng lặp ứng dụng phát qua BLE. */
+    /** @brief Lấy snapshot mới nhất để app phát BLE/MQTT. */
     bool pollTelemetry(TelemetrySnapshot &sample);
 
   private:

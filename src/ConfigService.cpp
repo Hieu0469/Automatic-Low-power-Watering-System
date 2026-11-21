@@ -26,6 +26,14 @@ ConfigUpdateResult ConfigService::applyCommand(const String &command) {
     return applied ? ConfigUpdateResult::Applied : ConfigUpdateResult::Invalid;
 }
 
+ConfigUpdateResult ConfigService::applyJson(JsonVariantConst json) {
+    if (!mutex_ || xSemaphoreTake(mutex_, pdMS_TO_TICKS(1000)) != pdTRUE)
+        return ConfigUpdateResult::Busy;
+    const bool applied = config_.applyJson(json);
+    xSemaphoreGive(mutex_);
+    return applied ? ConfigUpdateResult::Applied : ConfigUpdateResult::Invalid;
+}
+
 bool ConfigService::toJSON(String &json) {
     if (!mutex_ || xSemaphoreTake(mutex_, pdMS_TO_TICKS(1000)) != pdTRUE)
         return false;

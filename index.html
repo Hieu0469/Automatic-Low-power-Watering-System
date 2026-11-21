@@ -71,6 +71,14 @@ body{font-family:system-ui,sans-serif;background:#f5f5f3;color:#1a1a18;font-size
 .fail-badge.warn{background:#fff7ed;color:#ea580c;border-color:#fb923c}
 .fail-badge.danger{background:#fef2f2;color:#dc2626;border-color:#f87171;animation:failPulse 1s ease-in-out infinite}
 @keyframes failPulse{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.3)}50%{box-shadow:0 0 0 6px rgba(220,38,38,0)}}
+.mqtt-bar{display:flex;align-items:center;gap:8px;padding:10px 20px;background:#fff;border-bottom:1px solid #e0ddd6;flex-wrap:wrap}
+.mqtt-bar input{height:30px;padding:5px 9px;border:1px solid #d3d1c7;border-radius:6px;font:inherit;font-size:12px;background:#fff}
+.mqtt-bar #mqtt-url{min-width:220px;flex:2}
+.mqtt-bar #mqtt-device{width:115px}
+.mqtt-bar #mqtt-user,.mqtt-bar #mqtt-password{width:120px}
+.mqtt-state{font-size:12px;color:#777;white-space:nowrap}
+.mqtt-state.online{color:#15803d}
+.mqtt-state.offline{color:#b45309}
 </style>
 </head>
 <body>
@@ -83,6 +91,15 @@ body{font-family:system-ui,sans-serif;background:#f5f5f3;color:#1a1a18;font-size
   </button>
   <button class="save-btn" id="save-btn" onclick="pushAllToESP32()" disabled>Gửi lên ESP32</button>
   <button class="reset-btn" onclick="resetToDefault()">Reset mặc định</button>
+</div>
+
+<div class="mqtt-bar" aria-label="Kết nối MQTT">
+  <input id="mqtt-url" type="url" placeholder="ws://broker-ip:9001" aria-label="MQTT WebSocket URL">
+  <input id="mqtt-device" type="text" value="esp32-01" aria-label="MQTT device ID">
+  <input id="mqtt-user" type="text" placeholder="Username" aria-label="MQTT username" autocomplete="username">
+  <input id="mqtt-password" type="password" placeholder="Password" aria-label="MQTT password" autocomplete="current-password">
+  <button class="ble-pill" id="mqtt-btn" onclick="toggleMQTT()">Kết nối MQTT</button>
+  <span class="mqtt-state" id="mqtt-state" role="status">Chưa kết nối</span>
 </div>
 
 <div class="tabs">
@@ -231,12 +248,14 @@ body{font-family:system-ui,sans-serif;background:#f5f5f3;color:#1a1a18;font-size
       <span id="pump-txt">Bơm: chờ dữ liệu</span>
       <span id="water-out" style="margin-left:auto;font-size:12px;color:#aaa"></span>
     </div>
-    <div class="log-box" id="log-box"><span class="info">Chờ kết nối BLE...</span></div>
+    <div class="log-box" id="log-box"><span class="info">Chờ kết nối BLE hoặc MQTT...</span></div>
   </div>
 </div>
 
 <div class="toast" id="toast"></div>
 
+<script src="./vendor/mqtt.min.js"></script>
+<script src="./mqtt-dashboard.js"></script>
 <script>
 // ══════════════════════════════════════════════════════════
 // STATE
@@ -249,6 +268,9 @@ let rules = [
 ];
 let isDirty = false;   // có thay đổi chưa gửi
 let bleDevice=null, sensorChar=null, configChar=null;
+let alertActive=false;
+let lastMqttPumpState=null;
+let mqttDeviceOnline=false;
 
 // ══════════════════════════════════════════════════════════
 // TABS
@@ -291,8 +313,9 @@ function paramChanged(){isDirty=true;updateSaveBtn();redrawAll()}
 
 function updateSaveBtn(){
   const btn=document.getElementById('save-btn');
-  btn.disabled = !isDirty || !configChar;
-  btn.textContent = isDirty ? (configChar?'Gửi lên ESP32':'Gửi lên ESP32 (chưa kết nối)') : 'Đã đồng bộ ✓';
+  const connected=Boolean(configChar)||(mqttDashboard.isConnected()&&mqttDeviceOnline);
+  btn.disabled=!isDirty||!connected;
+  btn.textContent=isDirty?(connected?'Gửi lên ESP32':'Gửi lên ESP32 (chưa kết nối)'):'Đã đồng bộ ✓';
 }
 
 // ══════════════════════════════════════════════════════════
@@ -475,7 +498,15 @@ function onSensorData(e){
   const temp=parseFloat(parts[0]), hum=parseFloat(parts[1]), soil=parseFloat(parts[2]);
   const waterMs   = parts.length>=4 ? parseInt(parts[3]) : 0;
   const failCount = parts.length>=5 ? parseInt(parts[4]) : 0;
+  renderSensorData(temp,hum,soil,waterMs,failCount);
+}
 
+/** @brief Cập nhật thẻ cảm biến từ BLE hoặc MQTT sau khi đã kiểm tra payload. */
+function renderSensorData(temp,hum,soil,waterMs,failCount){
+  if(![temp,hum,soil,waterMs,failCount].every(Number.isFinite)){
+    log('Dữ liệu cảm biến không hợp lệ','err');
+    return;
+  }
   // Cập nhật sensor cards
   document.getElementById('lv-temp').textContent=temp.toFixed(1);
   document.getElementById('lv-hum').textContent=hum.toFixed(1);
@@ -488,10 +519,12 @@ function onSensorData(e){
   const wEl=document.getElementById('lv-water');
   if(wEl){ wEl.textContent=waterMs; document.getElementById('lb-water').style.width=Math.min(100,waterMs/1500*100)+'%'; }
 
-  // Pump status
-  document.getElementById('pdot').className='pdot'+(waterMs>0?' on':'');
-  document.getElementById('pump-txt').textContent=waterMs>0?'Bơm: đang hoạt động':'Bơm: không hoạt động';
-  document.getElementById('water-out').textContent='';
+  // BLE không có phản hồi trạng thái thật; MQTT pump/state sẽ cập nhật riêng.
+  if(!mqttDashboard.isConnected()){
+    document.getElementById('pdot').className='pdot';
+    document.getElementById('pump-txt').textContent=waterMs>0
+      ?`Lệnh tưới: ${waterMs} ms`:'Không có lệnh tưới';
+  }
 
   // Fail counter — nhận trực tiếp từ ESP32, không tính lại ở browser
   updateFailBadge(failCount);
@@ -501,6 +534,17 @@ function onSensorData(e){
   else if(failCount===0 && alertActive) handleAlert('CLEAR');
 
   log(`← ${temp}°C | ${hum}% | soil ${soil}% | bơm ${waterMs}ms | lỗi ${failCount}lần`,'info');
+}
+
+/** @brief Cảnh báo thiếu nước dựa trên số lần tưới không hiệu quả. */
+function handleAlert(type){
+  alertActive=type==='NO_WATER';
+  if(alertActive){
+    toast('Cảnh báo: đất chưa tăng độ ẩm sau khi bơm','err');
+    log('Có thể bể hết nước hoặc bơm/ống dẫn gặp lỗi','err');
+  }else{
+    log('Cảnh báo hết nước đã được xóa','info');
+  }
 }
 
 function updateFailBadge(n){
@@ -560,7 +604,19 @@ function applyConfigJSON(json){
 
 // ─── Gửi toàn bộ params lên ESP32 ───────────────────────
 async function pushAllToESP32(){
-  if(!configChar){toast('Chưa kết nối BLE','err');return;}
+  if(mqttDashboard.isConnected()&&mqttDeviceOnline){
+    try{
+      const config=buildMqttConfig();
+      await mqttDashboard.publishAction('set',config);
+      isDirty=false; updateSaveBtn();
+      toast('ESP32 đã lưu toàn bộ luật tưới ✓','ok');
+    }catch(error){
+      toast(error.message,'err');
+      log('Không lưu được cấu hình MQTT: '+error.message,'err');
+    }
+    return;
+  }
+  if(!configChar){toast('Chưa kết nối BLE hoặc MQTT','err');return;}
   const ps=getParams();
   const cmds=[];
   // MF params
@@ -595,9 +651,45 @@ async function writeCmd(cmd){
   log('→ '+cmd,'');
 }
 
+/** @brief Tạo đúng cấu trúc JSON mà FuzzyConfig::applyJson() kiểm tra. */
+function buildMqttConfig(){
+  for(const input of document.querySelectorAll('.param-table input[type=number]')){
+    if(input.value.trim()===''||!Number.isFinite(Number(input.value))){
+      throw new Error(`Giá trị ${input.id} không hợp lệ.`);
+    }
+  }
+  const ps=getParams();
+  const triple=mf=>[mf.a,mf.b,mf.c];
+  for(const group of [ps.soil,ps.hum,ps.temp]){
+    for(const mf of group){
+      if(mf.a>mf.b||mf.b>mf.c) throw new Error(`Cần a ≤ b ≤ c tại ${mf.key}.`);
+    }
+  }
+  return {
+    mf:{
+      sl:triple(ps.soil[0]),sm:triple(ps.soil[1]),sh:triple(ps.soil[2]),
+      hl:triple(ps.hum[0]),hm:triple(ps.hum[1]),hh:triple(ps.hum[2]),
+      th:triple(ps.temp[0]),tm:triple(ps.temp[1]),tc:triple(ps.temp[2])
+    },
+    rl:rules[0].map(row=>[...row]),
+    rm:rules[1].map(row=>[...row]),
+    rh:rules[2].map(row=>[...row])
+  };
+}
+
 // ─── Reset về mặc định ──────────────────────────────────
-function resetToDefault(){
+async function resetToDefault(){
   if(!confirm('Reset về tham số mặc định?')) return;
+  const mqttReady=mqttDashboard.isConnected()&&mqttDeviceOnline;
+  const bleReady=Boolean(configChar);
+  if(mqttReady){
+    try{
+      await mqttDashboard.publishAction('reset');
+    }catch(error){
+      toast(error.message,'err');
+      return;
+    }
+  }
   const def={
     s_low_a:-1,s_low_b:0,s_low_c:30,
     s_med_a:25,s_med_b:32,s_med_c:40,
@@ -615,9 +707,10 @@ function resetToDefault(){
     [[2,1,1],[1,1,0],[1,0,0]],
     [[0,0,0],[0,0,0],[0,0,0]]
   ];
-  if(configChar) writeCmd('RESET');
-  isDirty=false; redrawAll(); renderRules(); updateSaveBtn();
-  toast('Đã reset mặc định','ok');
+  if(!mqttReady&&bleReady) await writeCmd('RESET');
+  isDirty=!mqttReady&&!bleReady;
+  redrawAll(); renderRules(); updateSaveBtn();
+  toast(isDirty?'Đã đặt mặc định trên web; kết nối để gửi':'Đã reset mặc định','ok');
 }
 
 // ══════════════════════════════════════════════════════════
@@ -651,7 +744,10 @@ function toast(msg,type=''){
 
 let logLines=[];
 function log(msg,cls=''){
-  logLines.push(`<span class="${cls}">${msg}</span>`);
+  const safe=String(msg).replace(/[&<>"']/g,ch=>({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  })[ch]);
+  logLines.push(`<span class="${cls}">${safe}</span>`);
   if(logLines.length>80) logLines.shift();
   const b=document.getElementById('log-box');
   if(b){b.innerHTML=logLines.join('<br>');b.scrollTop=b.scrollHeight;}
@@ -660,9 +756,101 @@ function log(msg,cls=''){
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
 
 // ══════════════════════════════════════════════════════════
+// MQTT: broker WebSocket ↔ dashboard; firmware dùng TCP cùng broker.
+// ══════════════════════════════════════════════════════════
+const mqttDashboard=new DashboardMqtt({
+  onConnection(connected){
+    mqttDeviceOnline=false;
+    const state=document.getElementById('mqtt-state');
+    const button=document.getElementById('mqtt-btn');
+    state.textContent=connected?'Đã nối broker · chờ ESP32':'Broker chưa kết nối';
+    state.className='mqtt-state'+(connected?'':' offline');
+    button.textContent=connected?'Ngắt MQTT':'Kết nối MQTT';
+    updateSaveBtn();
+    if(connected) log('Đã kết nối MQTT broker','info');
+  },
+  onStatus(status){
+    mqttDeviceOnline=status==='online';
+    const state=document.getElementById('mqtt-state');
+    state.textContent=mqttDeviceOnline?'Broker OK · ESP32 online':'Broker OK · ESP32 offline';
+    state.className='mqtt-state '+(mqttDeviceOnline?'online':'offline');
+    if(!mqttDeviceOnline){
+      document.getElementById('pdot').className='pdot';
+      document.getElementById('pump-txt').textContent='Bơm: ESP32 offline';
+      lastMqttPumpState=null;
+    }
+    updateSaveBtn();
+  },
+  onTelemetry(sample){
+    if(sample.valid===false){
+      for(const id of ['lv-temp','lv-hum','lv-soil','lv-water'])
+        document.getElementById(id).textContent='--';
+      for(const id of ['lb-temp','lb-hum','lb-soil','lb-water'])
+        document.getElementById(id).style.width='0%';
+      log(`Cảm biến lỗi: ${sample.error||'unknown'}`,'err');
+      return;
+    }
+    renderSensorData(sample.temperatureC,sample.airHumidityPct,
+      sample.soilMoisturePct,sample.pumpCommandMs,sample.noWaterFailCount);
+    if(sample.noWaterAlert&&!alertActive) handleAlert('NO_WATER');
+    if(lastMqttPumpState) renderPumpState(lastMqttPumpState);
+  },
+  onPump(state){
+    lastMqttPumpState=state;
+    renderPumpState(state);
+  },
+  onConfig(config){
+    if(isDirty){
+      log('Có chỉnh sửa chưa gửi; bỏ qua config retained để giữ nội dung đang sửa.','warn');
+      return;
+    }
+    applyConfigJSON(JSON.stringify(config));
+  },
+  onAck(ack){log(`ESP32 ACK ${ack.requestId}: ${ack.reason}`,'info');},
+  onError(message){log('MQTT: '+message,'err');}
+});
+
+/** @brief Mở/đóng phiên MQTT từ thông số người dùng nhập. */
+function toggleMQTT(){
+  if(mqttDashboard.isConnected()){
+    mqttDashboard.disconnect();
+    return;
+  }
+  const settings={
+    url:document.getElementById('mqtt-url').value,
+    deviceId:document.getElementById('mqtt-device').value,
+    username:document.getElementById('mqtt-user').value,
+    password:document.getElementById('mqtt-password').value
+  };
+  try{
+    mqttDashboard.connect(settings);
+    // Chỉ lưu URL và device ID; không lưu mật khẩu trong trình duyệt.
+    localStorage.setItem('watering-mqtt-url',settings.url);
+    localStorage.setItem('watering-mqtt-device',settings.deviceId);
+    document.getElementById('mqtt-state').textContent='Đang kết nối broker...';
+  }catch(error){
+    toast(error.message,'err');
+    log(error.message,'err');
+  }
+}
+
+/** @brief Hiển thị trạng thái chân bơm và số lần tưới từ ESP32. */
+function renderPumpState(state){
+  if(typeof state.pumpOn!=='boolean'||!Number.isInteger(state.wateringCount)) return;
+  document.getElementById('pdot').className='pdot'+(state.pumpOn?' on':'');
+  document.getElementById('pump-txt').textContent=state.pumpOn
+    ?'Bơm: đang hoạt động':'Bơm: đã tắt';
+  document.getElementById('water-out').textContent=`Số lần tưới: ${state.wateringCount}`;
+}
+
+// ══════════════════════════════════════════════════════════
 // INIT
 // ══════════════════════════════════════════════════════════
 window.addEventListener('load',()=>{
+  try{
+    document.getElementById('mqtt-url').value=localStorage.getItem('watering-mqtt-url')||'';
+    document.getElementById('mqtt-device').value=localStorage.getItem('watering-mqtt-device')||'esp32-01';
+  }catch(error){log('Không dùng được localStorage: '+error.message,'warn');}
   setTimeout(redrawAll,80);
   renderRules();
   updateSaveBtn();

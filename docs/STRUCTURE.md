@@ -1,8 +1,8 @@
 # Cấu trúc firmware và cách debug
 
 `src/main.cpp` chỉ tạo `WateringApp` và gọi `begin()`/`tick()` từ entry point
-Arduino. Mỗi module bên dưới sở hữu trạng thái của chính nó; BLE nhận dữ liệu
-qua queue, không đọc trực tiếp biến trong sensor task.
+Arduino. Mỗi module bên dưới sở hữu trạng thái của chính nó; BLE và MQTT không
+đọc trực tiếp biến trong sensor task.
 
 | Module | Trách nhiệm | Điểm bắt đầu khi debug |
 | --- | --- | --- |
@@ -11,11 +11,12 @@ qua queue, không đọc trực tiếp biến trong sensor task.
 | `WateringPolicy.h` | Xác nhận hai chu kỳ, ngưỡng bật/tắt bơm | `update()` |
 | `TankMonitor.cpp` | So sánh độ ẩm trước/sau khi bơm để cảnh báo | `update()` |
 | `PumpController.cpp` | Queue lệnh, GPIO4, đếm số lần tưới, báo trạng thái bơm | `run()` |
-| `ConfigService.cpp` | Mutex, đọc/ghi luật mờ, suy luận trên snapshot cấu hình | `calculateWaterPercent()`, `applyCommand()` |
-| `FuzzyConfig.h` | Dữ liệu luật mờ, JSON và NVS | `applyCommand()`, `saveToNVS()` |
+| `ConfigService.cpp` | Mutex, đọc/ghi luật mờ, suy luận trên snapshot cấu hình | `calculateWaterPercent()`, `applyJson()` |
+| `FuzzyConfig.h` | Dữ liệu luật mờ, JSON và NVS | `applyJson()`, `saveToNVS()` |
 | `FuzzyLogic.h` | Hàm suy luận thuần với `FuzzyParams` truyền vào | `fuzzy_defuzzify()` |
 | `BLE_server.cpp` | BLE characteristic và lệnh BLE cũ | `ConfigCallbacks::onWrite()` |
-| `WateringApp.cpp` | Thứ tự khởi tạo, chuyển queue sang BLE, nhắc cảnh báo | `begin()`, `tick()` |
+| `MqttService.cpp` | Wi-Fi, MQTT topic, ACK và reconnect | `tick()`, `onMessage()` |
+| `WateringApp.cpp` | Thứ tự khởi tạo, chuyển queue sang BLE/MQTT, nhắc cảnh báo | `begin()`, `tick()` |
 
 ```mermaid
 flowchart LR
@@ -24,6 +25,7 @@ flowchart LR
     App --> Sensors[SensorService]
     App --> Pump[PumpController]
     App --> BLE[BLE server]
+    App --> MQTT[MqttService]
     Sensors --> Policy[WateringPolicy]
     Sensors --> Tank[TankMonitor]
     Sensors --> Config
@@ -40,7 +42,7 @@ flowchart LR
 3. `TankMonitor` chỉ đánh giá khả năng hết nước nếu `PumpController` báo lần
    bơm trước đã chạy thật. Sensor service gửi lệnh bơm và snapshot vào queue.
 4. `PumpController` bật/tắt GPIO4 trong task riêng, đẩy trạng thái bơm vào queue.
-5. `WateringApp::tick()` lấy các snapshot, phát BLE và theo dõi cảnh báo.
+5. `WateringApp::tick()` lấy các snapshot, phát BLE/MQTT và theo dõi cảnh báo.
 
 ## Khi gặp lỗi
 
@@ -50,8 +52,10 @@ flowchart LR
   `AppConfig.h`, rồi log `[Pump]`.
 - **Bơm chạy nhưng báo hết nước:** xem `PumpController::takeLastRunMs()` và
   `TankMonitor::update()`; cảm biến đất cần hiệu chuẩn riêng trên phần cứng.
-- **Luật tưới không đổi:** xem lệnh BLE ở `ConfigCallbacks::onWrite()`, sau đó
-  `ConfigService::applyCommand()` và `FuzzyConfig::saveToNVS()`.
+- **Dashboard không thấy MQTT:** xem `MqttService::tick()`, topic theo
+  `docs/MQTT.md` và thông số trong `MqttSettings.h`.
+- **Luật tưới không đổi:** xem ACK ở `MqttService::onMessage()`, sau đó
+  `ConfigService::applyJson()` và `FuzzyConfig::saveToNVS()`.
 
-Các dòng log có tiền tố `[Sensor]`, `[Pump]`, `[Tank]`, `[BLE]`,
+Các dòng log có tiền tố `[Sensor]`, `[Pump]`, `[Tank]`, `[BLE]`, `[MQTT]`,
 `[Config]`, `[App]` để lọc nhanh trong Serial Monitor 9600 baud.

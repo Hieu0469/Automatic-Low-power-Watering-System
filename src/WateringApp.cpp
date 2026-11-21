@@ -3,7 +3,7 @@
 #include "AppConfig.h"
 #include "BLE_server.h"
 
-WateringApp::WateringApp() : sensors_(config_, pump_) {}
+WateringApp::WateringApp() : sensors_(config_, pump_), mqtt_(config_) {}
 
 void WateringApp::begin() {
     Serial.begin(9600);
@@ -19,6 +19,7 @@ void WateringApp::begin() {
     }
 
     ble_server_init(config_);
+    mqtt_.begin();
     if (!sensors_.begin()) {
         Serial.println("[App] Khong khoi tao duoc sensor; dung he thong.");
         return;
@@ -60,8 +61,18 @@ void WateringApp::tick() {
         return;
     }
 
+    mqtt_.tick();
+    const bool reconnected = mqtt_.takeJustConnected();
+    if (reconnected) {
+        telemetryPending_ = hasTelemetry_;
+        pumpPending_ = hasPump_;
+    }
+
     TelemetrySnapshot sample;
     if (sensors_.pollTelemetry(sample)) {
+        latestTelemetry_ = sample;
+        hasTelemetry_ = true;
+        telemetryPending_ = true;
         if (sample.sensorValid) {
             ble_send_sensor_data(sample.temperatureC, sample.airHumidityPct, sample.soilMoisturePct,
                                  (int)sample.pumpCommandMs, sample.noWaterFailCount);
@@ -71,7 +82,20 @@ void WateringApp::tick() {
 
     PumpSnapshot pumpState;
     while (pump_.pollState(pumpState)) {
-        // Đọc hết queue; PumpController đã ghi log trạng thái bơm.
+        latestPump_ = pumpState;
+        hasPump_ = true;
+        pumpPending_ = true;
+        if (mqtt_.connected() && !reconnected && mqtt_.publishPumpState(pumpState))
+            pumpPending_ = false;
+    }
+
+    if (mqtt_.connected()) {
+        if (hasTelemetry_ && telemetryPending_ && mqtt_.publishTelemetry(latestTelemetry_))
+            telemetryPending_ = false;
+        if (hasPump_ && pumpPending_ && mqtt_.publishPumpState(latestPump_))
+            pumpPending_ = false;
+        if (ble_config_changed() && mqtt_.publishConfig())
+            ble_clear_config_changed();
     }
 
     serviceBle();
